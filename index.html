@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sales Invoice DER Automation</title>
+<style>
+:root{
+  --bg:#f4f6f8; --card:#ffffff; --fg:#14202b; --muted:#53626f; --line:#d9e0e6;
+  --accent:#0b5cad; --accent-fg:#ffffff; --ok:#13734a; --warn:#9a5b00; --bad:#b3261e; --head:#e8eef4;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10161c; --card:#17202a; --fg:#eaf0f5; --muted:#9fb0bf; --line:#2a3744;
+    --accent:#5aa9f5; --accent-fg:#06111c; --ok:#5fd39b; --warn:#f0b35a; --bad:#ff8a80; --head:#202c38;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10161c; --card:#17202a; --fg:#eaf0f5; --muted:#9fb0bf; --line:#2a3744;
+  --accent:#5aa9f5; --accent-fg:#06111c; --ok:#5fd39b; --warn:#f0b35a; --bad:#ff8a80; --head:#202c38;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+main{max-width:820px;margin:0 auto;padding:28px 18px 56px}
+h1{font-size:2rem;line-height:1.2;margin:0 0 6px}
+.lead{color:var(--muted);margin:0 0 22px}
+.btn{display:block;width:100%;font:600 1.15rem system-ui,sans-serif;background:var(--accent);color:var(--accent-fg);border:0;border-radius:12px;padding:18px;text-align:center;cursor:pointer}
+.btn:focus-within,.btn:focus-visible{outline:3px solid var(--fg);outline-offset:3px}
+.btn input{position:absolute;width:1px;height:1px;opacity:0}
+#msg{margin:16px 0 0;font-weight:600}
+.err{color:var(--bad)}
+#result{display:none;margin-top:26px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.stat b{display:block;font-size:2rem;line-height:1.2;overflow-wrap:anywhere}
+.stat span{color:var(--muted);font-size:1rem}
+ul.checks{list-style:none;margin:0 0 20px;padding:0}
+ul.checks li{padding:8px 0;border-top:1px solid var(--line)}
+ul.checks li:last-child{border-bottom:1px solid var(--line)}
+.ok{color:var(--ok);font-weight:700}.warn{color:var(--warn);font-weight:700}.bad{color:var(--bad);font-weight:700}
+h2{font-size:1.2rem;margin:26px 0 10px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:0.9rem;white-space:nowrap}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+th{background:var(--head)}
+td.n,th.n{text-align:right}
+tr.total td{font-weight:700;background:var(--head)}
+.note{color:var(--muted);font-size:0.95rem;margin-top:16px}
+</style>
+</head>
+<body>
+<main>
+<h1>Sales Invoice DER Automation</h1>
+<p class="lead">Choose your Excel file. You get a new file with a Pivot Report sheet. Your original file is not changed.</p>
+
+<label class="btn" id="pick">Choose Excel file<input id="file" type="file" accept=".xlsx,.xlsm,.xls,.csv"></label>
+<p id="msg" role="status"></p>
+
+<section id="result">
+  <div class="stats">
+    <div class="stat"><b id="sRows">0</b><span>Rows in report</span></div>
+    <div class="stat"><b id="sQty">0</b><span>Total Invoice Qty</span></div>
+    <div class="stat"><b id="sAmt">0</b><span>Total Invoice Gross Amt</span></div>
+  </div>
+  <ul class="checks" id="checks"></ul>
+  <button class="btn" id="dl" type="button">Download new Excel file</button>
+  <p id="dlmsg" role="status" style="font-weight:600"></p>
+  <h2>Preview</h2>
+  <div class="tw"><table id="prev"></table></div>
+  <p class="note">The Pivot Report sheet follows your layout: Tabular form, labels repeated on every row, no subtotals, one Grand Total. It holds ready values and is not a live PivotTable you can drag fields in. For a live PivotTable, use the Excel macro instead. Your file is read on this device and is not uploaded anywhere.</p>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+(function () {
+  var REQ = ["Source Site", "Section", "Brand", "Department", "Invoice Date", "Invoice Qty", "Invoice Gross Amt"];
+  var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var out = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var fmt = function (n, d) { return n.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d }); };
+
+  function norm(s) { return String(s == null ? "" : s).replace(/\s+/g, " ").trim().toLowerCase(); }
+  function isBlank(v) { return v === "" || v == null; }
+  function num(v) {
+    if (typeof v === "number") return v;
+    if (isBlank(v)) return 0;
+    var n = parseFloat(String(v).replace(/,/g, ""));
+    return isNaN(n) ? NaN : n;
+  }
+  function part(v) {
+    if (isBlank(v)) return { l: "(blank)", s: "\uffff" };
+    if (v instanceof Date) {
+      var d = new Date(v.getTime() + 30000);
+      return { l: ("0" + d.getDate()).slice(-2) + "-" + MON[d.getMonth()] + "-" + d.getFullYear(), s: d.getTime() };
+    }
+    if (typeof v === "number") return { l: String(v), s: v };
+    return { l: String(v).trim(), s: String(v).trim().toLowerCase() };
+  }
+  function cmp(a, b) {
+    var an = typeof a === "number", bn = typeof b === "number";
+    if (an && bn) return a - b;
+    if (an) return -1;
+    if (bn) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+
+  function build(wb, baseName) {
+    var found = null, best = "", bestN = 99;
+    wb.SheetNames.forEach(function (n) {
+      if (found) return;
+      var ws = wb.Sheets[n];
+      if (!ws || !ws["!ref"]) return;
+      var rg = XLSX.utils.decode_range(ws["!ref"]); rg.s.r = 0; rg.s.c = 0;
+      var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: true, defval: "", raw: true, range: rg });
+      for (var r = 0; r < Math.min(20, aoa.length); r++) {
+        var cells = aoa[r].map(norm), idx = {}, miss = [];
+        REQ.forEach(function (h) { var i = cells.indexOf(norm(h)); if (i < 0) miss.push(h); else idx[h] = i; });
+        if (!miss.length) { found = { name: n, aoa: aoa, hdr: r, idx: idx }; return; }
+        if (miss.length < bestN) { bestN = miss.length; best = "sheet " + n + ", row " + (r + 1) + " is missing: " + miss.join(", "); }
+      }
+    });
+    if (!found) throw new Error("Could not find all 7 column headers. Closest match: " + (best || "no sheet has data") + ".");
+    if (wb.SheetNames.indexOf("Pivot Report") >= 0) throw new Error("This file already has a sheet named Pivot Report. Rename it and try again.");
+
+    var idx = found.idx, orig = found.aoa, hdr = found.hdr;
+    if (orig.length <= hdr + 1) throw new Error("The sheet has headers but no data rows.");
+
+    // Totals straight from the untouched source, used later to check the report
+    var srcQty = 0, srcAmt = 0;
+    orig.slice(hdr + 1).forEach(function (r) {
+      var q = num(r[idx["Invoice Qty"]]), a = num(r[idx["Invoice Gross Amt"]]);
+      if (!isNaN(q)) srcQty += q; if (!isNaN(a)) srcAmt += a;
+    });
+
+    // Step 2: one blank row between the header row and the data (in the new copy only)
+    var src = orig.map(function (r) { return r.slice(); });
+    src.splice(hdr + 1, 0, []);
+
+    // Steps 3 to 6: group in the order Source Site > Section > Brand > Department > Invoice Date
+    var map = {}, bad = 0;
+    for (var i = hdr + 1; i < src.length; i++) {
+      var row = src[i];
+      var keys = REQ.slice(0, 5).map(function (h) { return row[idx[h]]; });
+      var qv = row[idx["Invoice Qty"]], av = row[idx["Invoice Gross Amt"]];
+      if (keys.every(isBlank) && isBlank(qv) && isBlank(av)) continue;
+      var q = num(qv), a = num(av);
+      if (isNaN(q)) { bad++; q = 0; }
+      if (isNaN(a)) { bad++; a = 0; }
+      var parts = keys.map(part), k = parts.map(function (p) { return p.l; }).join("\u0001");
+      var g = map[k] || (map[k] = { p: parts, q: 0, a: 0 });
+      g.q += q; g.a += a;
+    }
+    var groups = Object.keys(map).map(function (k) { return map[k]; });
+    groups.sort(function (x, y) {
+      for (var j = 0; j < 5; j++) { var c = cmp(x.p[j].s, y.p[j].s); if (c) return c; }
+      return 0;
+    });
+    var tq = 0, ta = 0;
+    var rows = groups.map(function (g) {
+      tq += g.q; ta += g.a;
+      return g.p.map(function (p) { return p.l; }).concat([g.q, g.a]);
+    });
+    var head = REQ.slice(0, 5).concat(["Sum of Invoice Qty", "Sum of Invoice Gross Amt"]);
+    var total = ["Grand Total", "", "", "", "", tq, ta];
+
+    var ws2 = XLSX.utils.aoa_to_sheet([head].concat(rows, [total]));
+    for (var r2 = 1; r2 <= rows.length + 1; r2++) {
+      ws2[XLSX.utils.encode_cell({ r: r2, c: 5 })].z = "#,##0";
+      ws2[XLSX.utils.encode_cell({ r: r2, c: 6 })].z = "#,##0.00";
+    }
+    ws2["!cols"] = [{ wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 14 }, { wch: 20 }, { wch: 28 }];
+
+    var ws1 = XLSX.utils.aoa_to_sheet(src, { cellDates: true });
+    if (wb.Sheets[found.name]["!cols"]) ws1["!cols"] = wb.Sheets[found.name]["!cols"];
+
+    // Step 8: keep every original sheet, add Pivot Report
+    var wb2 = XLSX.utils.book_new();
+    wb.SheetNames.forEach(function (n) { XLSX.utils.book_append_sheet(wb2, n === found.name ? ws1 : wb.Sheets[n], n); });
+    XLSX.utils.book_append_sheet(wb2, ws2, "Pivot Report");
+    var arr = XLSX.write(wb2, { bookType: "xlsx", type: "array", cellDates: true });
+
+    return {
+      name: baseName + "_Pivot_Report.xlsx", blob: new Blob([arr], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      head: head, rows: rows, total: total, sheet: found.name, hdrRow: found.hdr + 1,
+      qtyOk: Math.abs(tq - srcQty) < 0.005, amtOk: Math.abs(ta - srcAmt) < 0.005, bad: bad
+    };
+  }
+
+  function show(res) {
+    $("sRows").textContent = fmt(res.rows.length, 0);
+    $("sQty").textContent = fmt(res.total[5], 0);
+    $("sAmt").textContent = fmt(res.total[6], 2);
+    var li = [];
+    li.push('<li><span class="ok">&#10003;</span> All 7 columns found on sheet &ldquo;' + esc(res.sheet) + '&rdquo; (headers in row ' + res.hdrRow + ')</li>');
+    li.push('<li><span class="ok">&#10003;</span> Blank row added below the headers (row ' + (res.hdrRow + 1) + '). Original data not changed or deleted.</li>');
+    li.push('<li><span class="ok">&#10003;</span> Layout: Tabular form, labels repeated, no subtotals</li>');
+    li.push(res.qtyOk && res.amtOk
+      ? '<li><span class="ok">&#10003;</span> Report totals match the source totals</li>'
+      : '<li><span class="bad">&#10007;</span> Report totals do not match the source. Please check the data.</li>');
+    if (res.bad) li.push('<li><span class="warn">!</span> ' + res.bad + ' value(s) in Invoice Qty or Invoice Gross Amt are not numbers and were counted as 0</li>');
+    $("checks").innerHTML = li.join("");
+
+    var t = "<tr>" + res.head.map(function (h, i) { return "<th" + (i > 4 ? ' class="n"' : "") + ">" + esc(h) + "</th>"; }).join("") + "</tr>";
+    res.rows.slice(0, 12).forEach(function (r) { t += rowHtml(r, ""); });
+    if (res.rows.length > 12) t += '<tr><td colspan="7">... and ' + fmt(res.rows.length - 12, 0) + " more rows in the file</td></tr>";
+    t += rowHtml(res.total, "total");
+    $("prev").innerHTML = t;
+    $("result").style.display = "block";
+  }
+  function rowHtml(r, cls) {
+    return '<tr class="' + cls + '">' + r.map(function (v, i) {
+      return i > 4 ? '<td class="n">' + fmt(v, i === 5 ? 0 : 2) + "</td>" : "<td>" + esc(v) + "</td>";
+    }).join("") + "</tr>";
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  function fail(text) { $("msg").className = "err"; $("msg").textContent = text; $("result").style.display = "none"; out = null; }
+
+  $("file").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    $("msg").className = ""; $("msg").textContent = "Reading " + f.name + " ..."; $("dlmsg").textContent = "";
+    if (typeof XLSX === "undefined") { fail("The Excel reader did not load. Check your internet connection and reload the page."); return; }
+    var rd = new FileReader();
+    rd.onerror = function () { fail("Could not read this file. Try saving it again from Excel."); };
+    rd.onload = function () {
+      try {
+        var wb = XLSX.read(new Uint8Array(rd.result), { type: "array", cellDates: true });
+        out = build(wb, f.name.replace(/\.[^.]+$/, ""));
+        $("msg").textContent = "Done. Your report is ready.";
+        show(out);
+      } catch (err) { fail(err.message || "Something went wrong while reading the file."); }
+    };
+    rd.readAsArrayBuffer(f);
+  });
+
+  $("dl").addEventListener("click", function () {
+    if (!out) return;
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(out.blob);
+    a.download = out.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 10000);
+    $("dlmsg").textContent = "Downloading " + out.name + " ...";
+  });
+})();
+</script>
+</body>
+</html>
